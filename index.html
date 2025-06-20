@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PDF Afdekkaartjes Tool</title>
+  <style>
+    body, html {
+      margin: 0;
+      overflow: auto;
+      font-family: sans-serif;
+    }
+    #pdf-container {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      overflow: auto;
+      background: #ccc;
+    }
+    #pdf-viewer canvas {
+      display: block;
+      margin: auto;
+    }
+    .cover-box {
+      position: absolute;
+      background: black;
+      opacity: 1;
+      cursor: move;
+      resize: both;
+      overflow: hidden;
+      z-index: 10;
+      border: 1px solid #333;
+    }
+    #toolbox {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 100;
+      background: white;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.2);
+    }
+    .draggable-template {
+      width: 60px;
+      height: 60px;
+      background: black;
+      opacity: 0.9;
+      cursor: grab;
+      margin-top: 10px;
+    }
+    .cover-box button {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      background: white;
+      border: 1px solid #333;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+      z-index: 20;
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbox">
+    <input type="file" id="pdf-upload" accept="application/pdf" />
+    <div id="template-box" class="draggable-template"></div>
+    <button onclick="openFullscreen()">Fullscreen</button>
+  </div>
+
+  <div id="pdf-container">
+    <div id="pdf-viewer"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
+  <script>
+    const pdfContainer = document.getElementById("pdf-container");
+    const pdfViewer = document.getElementById("pdf-viewer");
+
+    let pdf = null;
+
+    document.getElementById("pdf-upload").addEventListener("change", async function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const fileReader = new FileReader();
+      fileReader.onload = async function () {
+        const typedarray = new Uint8Array(this.result);
+        pdfViewer.innerHTML = ""; // Clear previous
+        const loadingTask = pdfjsLib.getDocument(typedarray);
+        pdf = await loadingTask.promise;
+
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+          const page = await pdf.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 1.5 });
+
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+
+          const renderContext = {
+            canvasContext: context,
+            viewport: viewport,
+          };
+          await page.render(renderContext).promise;
+
+          pdfViewer.appendChild(canvas);
+        }
+
+        // Herstel kaartjes na laden PDF
+        restoreCards();
+      };
+      fileReader.readAsArrayBuffer(file);
+    });
+
+    // interact voor toolbox
+    interact('.draggable-template').draggable({
+      inertia: true,
+      listeners: {
+        end (event) {
+          const dropX = event.client.x + pdfContainer.scrollLeft;
+          const dropY = event.client.y + pdfContainer.scrollTop;
+
+          const newCard = createCard(dropX - 50, dropY - 50, 100, 100);
+          pdfContainer.appendChild(newCard);
+          makeCardInteractive(newCard);
+          saveCards();
+        }
+      }
+    });
+
+    function createCard(left, top, width, height) {
+      const card = document.createElement("div");
+      card.className = "cover-box";
+      card.style.width = width + "px";
+      card.style.height = height + "px";
+      card.style.left = left + "px";
+      card.style.top = top + "px";
+      card.style.transform = `translate(0px, 0px)`;
+      card.setAttribute("data-x", 0);
+      card.setAttribute("data-y", 0);
+      return card;
+    }
+
+    function makeCardInteractive(card) {
+      // Verwijderknop
+      const closeBtn = document.createElement("button");
+      closeBtn.innerHTML = "❌";
+      closeBtn.addEventListener("click", () => {
+        card.remove();
+        saveCards();
+      });
+      card.appendChild(closeBtn);
+
+      interact(card)
+        .draggable({
+          listeners: {
+            move(event) {
+              const target = event.target;
+              const x = (parseFloat(target.getAttribute("data-x")) || 0) + event.dx;
+              const y = (parseFloat(target.getAttribute("data-y")) || 0) + event.dy;
+
+              target.style.transform = `translate(${x}px, ${y}px)`;
+              target.setAttribute("data-x", x);
+              target.setAttribute("data-y", y);
+              saveCards();
+            },
+          },
+        })
+        .resizable({
+          edges: { left: true, right: true, bottom: true, top: true },
+        })
+        .on("resizemove", function (event) {
+          const target = event.target;
+          let x = parseFloat(target.getAttribute("data-x")) || 0;
+          let y = parseFloat(target.getAttribute("data-y")) || 0;
+
+          target.style.width = `${event.rect.width}px`;
+          target.style.height = `${event.rect.height}px`;
+
+          x += event.deltaRect.left;
+          y += event.deltaRect.top;
+
+          target.style.transform = `translate(${x}px, ${y}px)`;
+          target.setAttribute("data-x", x);
+          target.setAttribute("data-y", y);
+          saveCards();
+        });
+    }
+
+    function saveCards() {
+      const cards = Array.from(document.querySelectorAll(".cover-box")).map(card => ({
+        left: parseFloat(card.style.left),
+        top: parseFloat(card.style.top),
+        width: parseFloat(card.style.width),
+        height: parseFloat(card.style.height),
+        x: parseFloat(card.getAttribute("data-x")) || 0,
+        y: parseFloat(card.getAttribute("data-y")) || 0
+      }));
+      localStorage.setItem("pdfCards", JSON.stringify(cards));
+    }
+
+    function restoreCards() {
+      const saved = localStorage.getItem("pdfCards");
+      if (!saved) return;
+
+      const cards = JSON.parse(saved);
+      cards.forEach(cardData => {
+        const card = createCard(cardData.left, cardData.top, cardData.width, cardData.height);
+        card.setAttribute("data-x", cardData.x);
+        card.setAttribute("data-y", cardData.y);
+        card.style.transform = `translate(${cardData.x}px, ${cardData.y}px)`;
+        pdfContainer.appendChild(card);
+        makeCardInteractive(card);
+      });
+    }
+
+    function openFullscreen() {
+      if (pdfContainer.requestFullscreen) {
+        pdfContainer.requestFullscreen();
+      } else if (pdfContainer.webkitRequestFullscreen) {
+        pdfContainer.webkitRequestFullscreen();
+      } else if (pdfContainer.msRequestFullscreen) {
+        pdfContainer.msRequestFullscreen();
+      }
+    }
+  </script>
+</body>
+</html>
+
